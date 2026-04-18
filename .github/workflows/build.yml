@@ -24,7 +24,7 @@ on:
         default: 'true'
         type: boolean
       zeromount:
-        description: 'Enable ZeroMount'
+        description: 'Enable ZeroMount VFS'
         required: true
         default: 'false'
         type: boolean
@@ -98,6 +98,9 @@ jobs:
           # Дополнительные патчи (Wild Kernel patches repo)
           git clone https://github.com/WildKernels/kernel_patches.git
 
+          # Super-Builders (содержит ZeroMount патч)
+          git clone https://github.com/jimsterino98/Super-Builders.git
+
       # -------------------------------------------------------
       # 3. Скачивание компилятора (Neutron Clang)
       # -------------------------------------------------------
@@ -128,7 +131,6 @@ jobs:
           if [ -d "kernel-source/KernelSU-Next/.git" ]; then
             echo "Git-репозиторий обнаружен"
 
-            # Распаковываем shallow если нужно
             if [ -f "kernel-source/KernelSU-Next/.git/shallow" ]; then
               git -C "kernel-source/KernelSU-Next" fetch --unshallow || true
             fi
@@ -147,7 +149,6 @@ jobs:
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
           echo "KSU_VERSION_TAG=$KSU_GIT_TAG" >> $GITHUB_ENV
 
-          # Обновляем fallback значения в Kbuild
           if [ -f "$KBUILD" ]; then
             sed -i "s/KSU_VERSION_FALLBACK := [0-9]*/KSU_VERSION_FALLBACK := ${KSU_VERSION}/" "$KBUILD"
             sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := ${KSU_GIT_TAG}/" "$KBUILD"
@@ -167,7 +168,7 @@ jobs:
           cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./
 
-          # Применяем патч совместимости KSUN+SUSFS
+          # Применяем патч совместимости KSUNext + SUSFS
           if [ -f "../kernel_patches/wild/ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch" ]; then
             echo "Применяем патч совместимости KSUNext+SUSFS..."
             cd KernelSU-Next
@@ -187,16 +188,65 @@ jobs:
           echo "Ручной фикс kernel/sys.c для crDroid..."
           rm -f kernel/sys.c.rej
 
-          # Вставляем переменные SUSFS
           sed -i '/int error = 0;/a \
           #ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tstruct ksu_susfs_sus_su_info sus_su_info;\n#endif' kernel/sys.c
 
-          # Вставляем вызов хука
           sed -i '/if (error)/i \
           #ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (likely(!error)) {\n\t\terror = ksu_susfs_sus_su(&sus_su_info);\n\t}\n#endif' kernel/sys.c
 
       # -------------------------------------------------------
-      # 7. Добавление Baseband Guard (BBG)
+      # 7. Применение ZeroMount VFS патча
+      # -------------------------------------------------------
+      - name: 🗂️ Применение ZeroMount VFS
+        if: inputs.zeromount == true
+        run: |
+          cd kernel-source
+
+          PATCH_FILE="../Super-Builders/${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}/WildKSU/patches/60_zeromount-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "❌ ZeroMount патч не найден по пути: $PATCH_FILE"
+            echo "Доступные патчи в Super-Builders:"
+            find ../Super-Builders -name "*.patch" | head -20
+            exit 1
+          fi
+
+          echo "✅ Применяем ZeroMount патч..."
+          cp "$PATCH_FILE" .
+          patch -p1 < "60_zeromount-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch" || true
+          rm -f "60_zeromount-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
+
+          # Фикс task_mmu.c если патч не применился туда
+          if [ -f fs/proc/task_mmu.c ]; then
+            if ! grep -q 'zeromount_spoof_mmap_metadata' fs/proc/task_mmu.c; then
+              echo "Фиксим task_mmu.c вручную..."
+              sed -i '/pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;/a\
+          #ifdef CONFIG_ZEROMOUNT\
+          \tzeromount_spoof_mmap_metadata(inode, \&dev, \&ino);\
+          #endif' fs/proc/task_mmu.c
+            fi
+          fi
+
+          # Фикс stat.c если был .rej
+          if [ -f fs/stat.c.rej ]; then
+            echo "Фиксим stat.c вручную..."
+            if ! grep -q 'zeromount_stat_hook' fs/stat.c; then
+              perl -0pi -e 's@(static int vfs_statx\(.*?\)\s*\{.*?orig_flow:\n#endif\n)@$1\n#ifdef CONFIG_ZEROMOUNT\n\tif (filename) {\n\t\tint zm_ret = zeromount_stat_hook(dfd, filename, stat, request_mask, flags);\n\t\tif (zm_ret != -ENOENT)\n\t\t\treturn zm_ret;\n\t}\n#endif\n\n@s' fs/stat.c
+            fi
+          fi
+
+          # Фикс fs/Kconfig если был .rej
+          if [ -f fs/Kconfig.rej ]; then
+            echo "Фиксим fs/Kconfig вручную..."
+            if ! grep -q '^config ZEROMOUNT$' fs/Kconfig; then
+              perl -0pi -e 's@(config IO_WQ\n\tbool\n)@$1\nconfig ZEROMOUNT\n\tbool "ZeroMount Path Redirection Subsystem"\n\tdefault y\n\thelp\n\t  ZeroMount allows path redirection.\n\n@' fs/Kconfig
+            fi
+          fi
+
+          echo "✅ ZeroMount VFS патч применён"
+
+      # -------------------------------------------------------
+      # 8. Добавление Baseband Guard (BBG)
       # -------------------------------------------------------
       - name: 🛡️ Добавление BBG (Baseband Guard)
         if: inputs.bbg == true
@@ -209,7 +259,7 @@ jobs:
           sed -i '/^CONFIG_LSM=/ s/"$/,baseband_guard"/' arch/arm64/configs/${{ env.DEFCONFIG }} || true
 
       # -------------------------------------------------------
-      # 8. Unicode bypass fix
+      # 9. Unicode bypass fix
       # -------------------------------------------------------
       - name: 🔤 Применение Unicode fix
         if: inputs.unicodefix == true
@@ -225,7 +275,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 9. DroidSpace (IPC/Namespace поддержка)
+      # 10. DroidSpace (IPC/Namespace поддержка)
       # -------------------------------------------------------
       - name: 🐳 Добавление DroidSpace
         if: inputs.droidspace == true
@@ -236,7 +286,7 @@ jobs:
             | patch -p1 --forward || true
 
       # -------------------------------------------------------
-      # 10. Оптимизации ядра
+      # 11. Оптимизации ядра
       # -------------------------------------------------------
       - name: ⚡ Применение оптимизаций
         if: inputs.optimizations == true
@@ -245,7 +295,6 @@ jobs:
           if ls ../kernel_patches/common/*.patch 1>/dev/null 2>&1; then
             echo "Применяем патчи оптимизаций..."
             cp ../kernel_patches/common/*.patch ./
-            # Убираем патчи которые не нужны для этого ядра
             rm -f unicode_bypass_fix_6.1+.patch unicode_bypass_fix_6.1-.patch IPv6_NAT_FIX.patch 2>/dev/null || true
 
             for p in *.patch; do
@@ -260,11 +309,11 @@ jobs:
               fi
             done
           else
-            echo "Папка с патчами оптимизаций не найдена, пропускаем"
+            echo "Патчи оптимизаций не найдены, пропускаем"
           fi
 
       # -------------------------------------------------------
-      # 11. NTSync
+      # 12. NTSync
       # -------------------------------------------------------
       - name: 🔄 Добавление NTSync
         if: inputs.ntsync == true
@@ -278,11 +327,11 @@ jobs:
             patch -p1 < ntsync_compat_${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             rm -f ntsync_base.patch ntsync_compat_*.patch
           else
-            echo "NTSync патчи не найдены в kernel_patches, пропускаем"
+            echo "NTSync патчи не найдены, пропускаем"
           fi
 
       # -------------------------------------------------------
-      # 12. Уничтожение Polly (убираем глитчи GPU)
+      # 13. Уничтожение Polly (убираем глитчи GPU)
       # -------------------------------------------------------
       - name: 🧨 Уничтожение Polly
         run: |
@@ -295,7 +344,7 @@ jobs:
           echo "✅ Polly вырезан"
 
       # -------------------------------------------------------
-      # 13. Настройка defconfig
+      # 14. Настройка defconfig
       # -------------------------------------------------------
       - name: ⚙️ Настройка defconfig
         run: |
@@ -306,7 +355,7 @@ jobs:
           # === KernelSU-Next ===
           CONFIG_KSU=y
 
-          # === ПОЛНОЕ УБИЙСТВО ЗАЩИТЫ SAMSUNG ===
+          # === УБИЙСТВО ЗАЩИТЫ SAMSUNG ===
           CONFIG_UH=n
           CONFIG_UH_RKP=n
           CONFIG_UH_LKMAUTH=n
@@ -320,19 +369,14 @@ jobs:
           CONFIG_KDP_NS=n
           CONFIG_KDP=n
 
-          # === ФИКСЫ / БАЗОВЫЕ ===
+          # === БАЗОВЫЕ ФИКСЫ ===
           CONFIG_POLLY_CLANG=n
           CONFIG_TMPFS_XATTR=y
           CONFIG_TMPFS_POSIX_ACL=y
-
-          # === Mountify Support ===
           CONFIG_OVERLAY_FS=y
-
-          # === Увеличиваем буфер лога ===
           CONFIG_LOG_BUF_SHIFT=20
           EOF
 
-          # SUSFS конфиги
           if [ "${{ inputs.susfs }}" = "true" ]; then
             cat >> "$DEFCFG" << 'EOF'
           # === SUSFS ===
@@ -344,7 +388,6 @@ jobs:
           EOF
           fi
 
-          # ZeroMount конфиги
           if [ "${{ inputs.zeromount }}" = "true" ]; then
             cat >> "$DEFCFG" << 'EOF'
           # === ZeroMount ===
@@ -352,7 +395,6 @@ jobs:
           EOF
           fi
 
-          # DroidSpace конфиги
           if [ "${{ inputs.droidspace }}" = "true" ]; then
             cat >> "$DEFCFG" << 'EOF'
           # === DroidSpace / IPC ===
@@ -371,7 +413,6 @@ jobs:
           EOF
           fi
 
-          # NTSync конфиги
           if [ "${{ inputs.ntsync }}" = "true" ]; then
             cat >> "$DEFCFG" << 'EOF'
           # === NTSync ===
@@ -380,18 +421,16 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 14. Переименование ядра и очистка dirty флагов
+      # 15. Переименование ядра и очистка dirty флагов
       # -------------------------------------------------------
       - name: 🏷️ Имя ядра и очистка dirty
         run: |
           cd kernel-source
-          # Добавляем суффикс -Wild к версии ядра
           sed -i '$s|echo "\$res"|echo "\$res-Wild"|' ./scripts/setlocalversion
-          # Убираем -dirty
           sed -i 's/-dirty//' ./scripts/setlocalversion
 
       # -------------------------------------------------------
-      # 15. Установка имени артефакта
+      # 16. Установка имени артефакта
       # -------------------------------------------------------
       - name: 🏷️ Установка имени артефакта
         run: |
@@ -400,7 +439,7 @@ jobs:
           echo "✅ Имя артефакта: $FILE_NAME"
 
       # -------------------------------------------------------
-      # 16. Компиляция ядра
+      # 17. Компиляция ядра
       # -------------------------------------------------------
       - name: 🏗️ Компиляция ядра
         run: |
@@ -425,7 +464,7 @@ jobs:
             Image
 
       # -------------------------------------------------------
-      # 17. Упаковка AnyKernel3
+      # 18. Упаковка AnyKernel3
       # -------------------------------------------------------
       - name: 📦 Упаковка AnyKernel3
         run: |
@@ -435,11 +474,10 @@ jobs:
             echo "✅ Image найден, копируем в AnyKernel3..."
             cp "$IMAGE_PATH" AnyKernel3/Image
           else
-            echo "❌ Image не найден по пути: $IMAGE_PATH"
-            # Ищем Image в других местах на всякий случай
+            echo "❌ Image не найден по стандартному пути, ищем..."
             FOUND=$(find kernel-source -name "Image" -not -path "*/src/*" 2>/dev/null | head -1)
             if [ -n "$FOUND" ]; then
-              echo "Найден Image по пути: $FOUND"
+              echo "Найден Image: $FOUND"
               cp "$FOUND" AnyKernel3/Image
             else
               echo "Image нигде не найден!"
@@ -448,7 +486,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 18. Загрузка AnyKernel3 артефакта
+      # 19. Загрузка артефактов
       # -------------------------------------------------------
       - name: 🚀 Загрузка AnyKernel3
         uses: actions/upload-artifact@v4
@@ -457,9 +495,6 @@ jobs:
           path: AnyKernel3/**
           compression-level: 9
 
-      # -------------------------------------------------------
-      # 19. Загрузка чистого Image
-      # -------------------------------------------------------
       - name: 🚀 Загрузка Image
         uses: actions/upload-artifact@v4
         with:
@@ -505,7 +540,7 @@ jobs:
           if-no-files-found: ignore
 
       # -------------------------------------------------------
-      # 21. Итоговый отчёт о сборке
+      # 21. Итоговый отчёт
       # -------------------------------------------------------
       - name: 📋 Итоговый отчёт
         if: always()
@@ -529,7 +564,6 @@ jobs:
           echo "| **Unicode fix** | ${{ inputs.unicodefix }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Статус Image
           if [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
             echo "## ✅ Сборка успешна" >> $GITHUB_STEP_SUMMARY
           else
@@ -537,7 +571,6 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Отклонённые патчи
           echo "## Отклонённые патчи: ${REJ_COUNT:-0}" >> $GITHUB_STEP_SUMMARY
           if [ -f patch-rejects/index.txt ] && [ -s patch-rejects/index.txt ]; then
             while IFS= read -r line; do
