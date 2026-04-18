@@ -4,6 +4,7 @@ permissions:
   actions: write 
 
 on:
+  # Оставляем для вызова из других воркфлоу
   workflow_call:
     inputs:
       branch:
@@ -39,6 +40,73 @@ on:
       optimizations:
         required: true
         type: string
+        
+  # Добавляем для ручного запуска через кнопку "Run workflow" в GitHub Actions
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Ветка (например: 15.0)'
+        required: true
+        type: string
+        default: '15.0'
+      android_version:
+        description: 'Версия Android'
+        required: true
+        type: string
+        default: '15'
+      kernel_version:
+        description: 'Версия ядра (например: 5.15)'
+        required: true
+        type: string
+        default: '5.15'
+      susfs:
+        description: 'Включить SUSFS?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      bbg:
+        description: 'Включить Baseband-guard?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      unicodefix:
+        description: 'Включить Unicode fix?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      zeromount:
+        description: 'Включить Zeromount?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      wksu:
+        description: 'Включить KernelSU-Next (wksu)?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      droidspace:
+        description: 'Включить поддержку Droidspace?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      ntsync:
+        description: 'Включить NTsync?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      optimizations:
+        description: 'Включить оптимизации?'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
 
 jobs:
   build-crdroid-sm8550:
@@ -81,7 +149,6 @@ jobs:
       
       - name: Clone crDroid Kernel Source
         run: |
-            # Клонируем репозиторий crDroid для SM8550
             git clone --depth 1 -b ${{ inputs.branch }} --single-branch https://github.com/crdroidandroid/android_kernel_samsung_sm8550.git $CONFIG
             
       - name: Set Path Environment Variables
@@ -92,10 +159,7 @@ jobs:
           ANYKERNEL3="$ROOT/AnyKernel3"
           ZEROMOUNT="$ROOT/Super-Builders"
           
-          # Для AOSP/crDroid ядер корень репозитория обычно и есть COMMON
           COMMON="$CONFIG"
-          
-          # Основной конфиг GKI для SM8550
           GKI_DEFCONFIG="$COMMON/arch/arm64/configs/gki_defconfig"
 
           echo "ROOT=$ROOT" >> $GITHUB_ENV
@@ -244,7 +308,6 @@ jobs:
           CONFIG_TMPFS_POSIX_ACL=y
           CONFIG_LOG_BUF_SHIFT=20
           
-          # nuke root protection (Knox/Samsung specifics)
           CONFIG_UH=n
           CONFIG_UH_RKP=n
           CONFIG_UH_LKMAUTH=n
@@ -308,7 +371,6 @@ jobs:
           cd "$CONFIG"
           echo "Building crDroid sm8550 kernel..."
           
-          # Стандартный метод сборки Bazel для GKI ядер
           if [ -f "tools/bazel" ]; then
             tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
           else
@@ -319,7 +381,6 @@ jobs:
       - name: Prepare AnyKernel3
         run: |
           cd "$CONFIG"
-          # Путь для собранного Image через Bazel GKI
           if [[ -f ./bazel-bin/common/kernel_aarch64/Image ]]; then
             cp ./bazel-bin/common/kernel_aarch64/Image "$ANYKERNEL3/Image"
           elif [[ -f ./out/dist/Image ]]; then
