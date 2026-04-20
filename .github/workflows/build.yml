@@ -152,12 +152,14 @@ jobs:
         run: |
           cd kernel-source
 
+          echo "Копируем файлы SUSFS..."
           cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/
           cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./
 
           # Патч совместимости KSUNext + SUSFS
           if [ -f "../kernel_patches/wild/ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch" ]; then
+            echo "Применяем патч совместимости KSUNext+SUSFS..."
             cd KernelSU-Next
             cp "../../kernel_patches/wild/ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch" .
             patch -p1 < ksun-0daf55582-susfs-v2.1.0-e259e7d6.patch || true
@@ -169,15 +171,13 @@ jobs:
           sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/open.c
 
           # Основной патч SUSFS
+          echo "Применяем основной патч SUSFS..."
           patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
           rm -f 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
 
-          # Ручной фикс kernel/sys.c для crDroid
+          # Удаляем .rej от sys.c — KernelSU-Next уже сам патчит этот файл
           rm -f kernel/sys.c.rej
-          sed -i '/int error = 0;/a \
-          #ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tstruct ksu_susfs_sus_su_info sus_su_info;\n#endif' kernel/sys.c
-          sed -i '/if (error)/i \
-          #ifdef CONFIG_KSU_SUSFS_SUS_SU\n\tif (likely(!error)) {\n\t\terror = ksu_susfs_sus_su(&sus_su_info);\n\t}\n#endif' kernel/sys.c
+          echo "✅ SUSFS применён"
 
       # -------------------------------------------------------
       # 7. Добавление BBG
@@ -186,6 +186,7 @@ jobs:
         if: inputs.bbg == true
         run: |
           cd kernel-source
+          echo "Устанавливаем BBG..."
           curl -LSs https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
           echo "CONFIG_BBG=y" >> arch/arm64/configs/${{ env.DEFCONFIG }}
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
@@ -265,6 +266,7 @@ jobs:
           find . -type f -name "Makefile" -exec sed -i 's/-mllvm -regalloc-eviction-advisor=[a-z-]*//g' {} +
           find . -type f -name "Makefile" -exec sed -i 's/-mllvm -enable-ml-regalloc//g' {} +
           find . -type f -name "Makefile" -exec sed -i 's/-polly[a-zA-Z0-9=_-]*//g' {} +
+          echo "✅ Polly вырезан"
 
       # -------------------------------------------------------
       # 13. Настройка defconfig
@@ -311,7 +313,6 @@ jobs:
           EOF
           fi
 
-          # BBR включается только через defconfig — патч несовместим с crDroid tcp.h
           if [ "${{ inputs.bbr }}" = "true" ]; then
             cat >> "$DEFCFG" << 'EOF'
           # === BBR TCP ===
@@ -377,7 +378,10 @@ jobs:
           export SUBARCH=arm64
           export KBUILD_COMPILER_STRING="$(clang --version | head -n 1)"
 
+          echo "Конфигурируем..."
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 ${{ env.DEFCONFIG }}
+
+          echo "Собираем ядро..."
           make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -395,13 +399,16 @@ jobs:
         run: |
           IMAGE_PATH="kernel-source/out/arch/arm64/boot/Image"
           if [ -f "$IMAGE_PATH" ]; then
+            echo "✅ Image найден"
             cp "$IMAGE_PATH" AnyKernel3/Image
           else
+            echo "❌ Image не найден по стандартному пути, ищем..."
             FOUND=$(find kernel-source -name "Image" -not -path "*/src/*" 2>/dev/null | head -1)
             if [ -n "$FOUND" ]; then
+              echo "Найден: $FOUND"
               cp "$FOUND" AnyKernel3/Image
             else
-              echo "❌ Image не найден!"
+              echo "Image нигде не найден!"
               exit 1
             fi
           fi
