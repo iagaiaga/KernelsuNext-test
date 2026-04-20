@@ -175,8 +175,21 @@ jobs:
           patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
           rm -f 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
 
-          # Удаляем .rej от sys.c — KernelSU-Next уже сам патчит этот файл
+          # Фикс kernel/sys.c — SUSFS hunk #3 не применяется потому что
+          # KernelSU-Next уже пропатчил это место. Вставляем sus_su хук вручную
+          # только если его ещё нет в файле.
+          if ! grep -q 'ksu_susfs_sus_su' kernel/sys.c; then
+            echo "Вставляем sus_su хук в kernel/sys.c вручную..."
+            # Ищем строку с ksu_handle_prctl которую добавил KernelSU-Next
+            # и вставляем sus_su после неё
+            sed -i '/ksu_handle_prctl/a\\n#ifdef CONFIG_KSU_SUSFS_SUS_SU\n\t{\n\t\tstruct ksu_susfs_sus_su_info sus_su_info;\n\t\tif (likely(!error))\n\t\t\terror = ksu_susfs_sus_su(\&sus_su_info);\n\t}\n#endif' kernel/sys.c || true
+          else
+            echo "sus_su хук уже есть в kernel/sys.c, пропускаем"
+          fi
+
+          # Убираем мусорные .rej файлы
           rm -f kernel/sys.c.rej
+
           echo "✅ SUSFS применён"
 
       # -------------------------------------------------------
@@ -188,9 +201,21 @@ jobs:
           cd kernel-source
           echo "Устанавливаем BBG..."
           curl -LSs https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
-          echo "CONFIG_BBG=y" >> arch/arm64/configs/${{ env.DEFCONFIG }}
+
+          DEFCFG="arch/arm64/configs/${{ env.DEFCONFIG }}"
+
+          # Добавляем CONFIG_BBG
+          echo "CONFIG_BBG=y" >> "$DEFCFG"
+
+          # Обновляем security/Kconfig чтобы добавить baseband_guard в LSM список
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
-          sed -i '/^CONFIG_LSM=/ s/"$/,baseband_guard"/' arch/arm64/configs/${{ env.DEFCONFIG }} || true
+
+          # Жёстко прописываем полную строку CONFIG_LSM с baseband_guard
+          # Убираем старую строку CONFIG_LSM если есть и добавляем правильную
+          sed -i '/^CONFIG_LSM=/d' "$DEFCFG"
+          echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> "$DEFCFG"
+
+          echo "✅ BBG установлен"
 
       # -------------------------------------------------------
       # 8. Unicode bypass fix
