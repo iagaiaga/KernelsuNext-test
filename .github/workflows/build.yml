@@ -13,6 +13,11 @@ on:
         required: true
         default: 'true'
         type: boolean
+      bbrv3:
+        description: 'Enable BBRv3 TCP (faster internet)'
+        required: true
+        default: 'true'
+        type: boolean
       ntsync:
         description: 'Enable NTSync patches'
         required: true
@@ -187,7 +192,50 @@ jobs:
           sed -i '/^CONFIG_LSM=/ s/"$/,baseband_guard"/' arch/arm64/configs/${{ env.DEFCONFIG }} || true
 
       # -------------------------------------------------------
-      # 8. Unicode bypass fix
+      # 8. BBRv3 TCP
+      # -------------------------------------------------------
+      - name: 🌐 Добавление BBRv3 TCP
+        if: inputs.bbrv3 == true
+        run: |
+          cd kernel-source
+          PATCH_NAME="bbrv3-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
+
+          if [ -f "../kernel_patches/bbr/$PATCH_NAME" ]; then
+            echo "✅ Применяем BBRv3 патч: $PATCH_NAME"
+            cp "../kernel_patches/bbr/$PATCH_NAME" .
+            patch -p1 < "$PATCH_NAME" || true
+            rm -f "$PATCH_NAME"
+          else
+            echo "⚠️ Патч $PATCH_NAME не найден в kernel_patches/bbr/"
+            echo "Доступные BBR патчи:"
+            find ../kernel_patches/bbr/ -name "*.patch" 2>/dev/null || echo "Папка bbr не найдена"
+            echo "Пробуем универсальный BBRv3..."
+            # Fallback — пробуем патч от android14-6.1 если нет точного
+            FALLBACK="bbrv3-android14-6.1.patch"
+            if [ -f "../kernel_patches/bbr/$FALLBACK" ]; then
+              cp "../kernel_patches/bbr/$FALLBACK" .
+              patch -p1 < "$FALLBACK" || true
+              rm -f "$FALLBACK"
+            else
+              echo "❌ BBRv3 патч не найден совсем, пропускаем"
+            fi
+          fi
+
+          cat >> "arch/arm64/configs/${{ env.DEFCONFIG }}" << 'EOF'
+          # === BBRv3 TCP ===
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_TCP_CONG_CUBIC=y
+          # CONFIG_DEFAULT_BBR is not set
+          CONFIG_DEFAULT_TCP_CONG="cubic"
+          CONFIG_NET_SCH_FQ=y
+          # CONFIG_TCP_CONG_BIC is not set
+          # CONFIG_TCP_CONG_WESTWOOD is not set
+          # CONFIG_TCP_CONG_HTCP is not set
+          EOF
+
+      # -------------------------------------------------------
+      # 9. Unicode bypass fix
       # -------------------------------------------------------
       - name: 🔤 Применение Unicode fix
         if: inputs.unicodefix == true
@@ -202,7 +250,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 9. DroidSpace
+      # 10. DroidSpace
       # -------------------------------------------------------
       - name: 🐳 Добавление DroidSpace
         if: inputs.droidspace == true
@@ -212,7 +260,7 @@ jobs:
             | patch -p1 --forward || true
 
       # -------------------------------------------------------
-      # 10. Оптимизации
+      # 11. Оптимизации
       # -------------------------------------------------------
       - name: ⚡ Применение оптимизаций
         if: inputs.optimizations == true
@@ -234,7 +282,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 11. NTSync
+      # 12. NTSync
       # -------------------------------------------------------
       - name: 🔄 Добавление NTSync
         if: inputs.ntsync == true
@@ -251,7 +299,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 12. Уничтожение Polly
+      # 13. Уничтожение Polly
       # -------------------------------------------------------
       - name: 🧨 Уничтожение Polly
         run: |
@@ -262,7 +310,7 @@ jobs:
           find . -type f -name "Makefile" -exec sed -i 's/-polly[a-zA-Z0-9=_-]*//g' {} +
 
       # -------------------------------------------------------
-      # 13. Настройка defconfig
+      # 14. Настройка defconfig
       # -------------------------------------------------------
       - name: ⚙️ Настройка defconfig
         run: |
@@ -332,7 +380,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 14. Имя ядра и очистка dirty
+      # 15. Имя ядра и очистка dirty
       # -------------------------------------------------------
       - name: 🏷️ Имя ядра и очистка dirty
         run: |
@@ -341,7 +389,7 @@ jobs:
           sed -i 's/-dirty//' ./scripts/setlocalversion
 
       # -------------------------------------------------------
-      # 15. Имя артефакта
+      # 16. Имя артефакта
       # -------------------------------------------------------
       - name: 🏷️ Установка имени артефакта
         run: |
@@ -350,7 +398,7 @@ jobs:
           echo "✅ Имя артефакта: $FILE_NAME"
 
       # -------------------------------------------------------
-      # 16. Компиляция
+      # 17. Компиляция
       # -------------------------------------------------------
       - name: 🏗️ Компиляция ядра
         run: |
@@ -372,7 +420,7 @@ jobs:
             Image
 
       # -------------------------------------------------------
-      # 17. Упаковка AnyKernel3
+      # 18. Упаковка AnyKernel3
       # -------------------------------------------------------
       - name: 📦 Упаковка AnyKernel3
         run: |
@@ -390,7 +438,7 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 18. Загрузка артефактов
+      # 19. Загрузка артефактов
       # -------------------------------------------------------
       - name: 🚀 Загрузка AnyKernel3
         uses: actions/upload-artifact@v4
@@ -406,7 +454,7 @@ jobs:
           path: kernel-source/out/arch/arm64/boot/Image
 
       # -------------------------------------------------------
-      # 19. Сбор отклонённых патчей
+      # 20. Сбор отклонённых патчей
       # -------------------------------------------------------
       - name: 🔍 Сбор отклонённых патчей
         if: always()
@@ -437,7 +485,7 @@ jobs:
           if-no-files-found: ignore
 
       # -------------------------------------------------------
-      # 20. Итоговый отчёт
+      # 21. Итоговый отчёт
       # -------------------------------------------------------
       - name: 📋 Итоговый отчёт
         if: always()
@@ -451,6 +499,7 @@ jobs:
           echo "| **KernelSU-Next** | v${KSU_VERSION} (${KSU_VERSION_TAG}) |" >> $GITHUB_STEP_SUMMARY
           echo "| **SUSFS** | ${{ inputs.susfs }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **BBG** | ${{ inputs.bbg }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **BBRv3** | ${{ inputs.bbrv3 }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **NTSync** | ${{ inputs.ntsync }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Оптимизации** | ${{ inputs.optimizations }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **DroidSpace** | ${{ inputs.droidspace }} |" >> $GITHUB_STEP_SUMMARY
