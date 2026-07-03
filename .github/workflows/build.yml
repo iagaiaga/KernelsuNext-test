@@ -40,9 +40,10 @@ on:
         type: boolean
 
 env:
-  ANDROID_VERSION: android13
-  KERNEL_VERSION: "5.15"
-  DEFCONFIG: dm2q_defconfig
+ FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
+ANDROID_VERSION: android13
+KERNEL_VERSION: "5.15"
+DEFCONFIG: dm2q_defconfig
 
 jobs:
   build-crdroid-s23plus:
